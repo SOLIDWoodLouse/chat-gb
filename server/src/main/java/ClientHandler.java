@@ -2,7 +2,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class ClientHandler {
     private String nickname;
@@ -11,37 +10,70 @@ public class ClientHandler {
     private DataOutputStream out;
     private Server server;
 
-    public ClientHandler(Integer numero, Server server, Socket socket) {
+    public ClientHandler(Server server, Socket socket) {
         try {
             this.socket = socket;
             this.server = server;
             this.in = new DataInputStream(socket.getInputStream());
             this.out = new DataOutputStream(socket.getOutputStream());
-            this.nickname = "Client "+numero;
-            new Thread(() -> {
-                server.subscribe(this);
+            new Thread(() -> { // поток для клиента
                 boolean continueChat = true;
-                while (continueChat) {
-                    String msg = null;
-                    try {
-                        msg = in.readUTF();
-                        if(msg.startsWith("/")) {
-                            if(msg.equalsIgnoreCase("/end")) {
-                                continueChat = false;
+                String msg = "";
+                boolean isAuthorized = false;
+                try {
+                    // long start = System.currentTimeMillis();
+                    while (!isAuthorized && continueChat) { // цикл авторизации
+                        /*
+                         * Последнее ДЗ (8) один из возможных вариантов если не понятно пишите мне
+                         * в телеграм if((System.currentTimeMillis() - start) > 120000){ continueChat =
+                         * false; // Тут можно еще и отправить и сообщение об ошибке
+                         * sendMessage("/error timeout"); и там как то это обрабатывать } else
+                         * if(in.available()>0) {
+                         */
+                        msg = in.readUTF(); // читаем сообщение от клиента
+                        if (msg.startsWith("/auth")) { // если начинается с /auth, то пытаемся его авторизировать
+                            String[] tokens = msg.split("\\s");
+                            nickname = server.getAuthService().getNicknameByLoginAndPassword(tokens[1], tokens[2]);
+                            if (nickname != null) { // если авторизация, то шлем клиенту authok и выходим из цикла
+                                // авторизации
+                                isAuthorized = true;
+                                sendMessage("/authok");
+                                server.subscribe(this);
+                            } else {
+                                sendMessage("/error"); // иначе пишем клиенту об ошибке (по хорошему тут можно еще
+                                // текст ошибки писать, а на клиенте его ловить и печатать. Если кто то хочет, то может добавить это в чат, не будет
+                                // не будет получаться -> пишите в телеграм
                             }
                         }
-                        else {
-                            server.broadcastMessage(nickname+" : "+msg);
+                        if (msg.equalsIgnoreCase("/end")) {// клиент решил выйти без авторизации s
+                            continueChat = false;
                         }
-
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                    finally {
-                        disconnect();
+                    // } // это скобка от ДЗ 8
                     }
 
+                    while (continueChat) { // цикл чтения сообщений клиента
+                        msg = in.readUTF();
+                        if (msg.startsWith("/")) {// специальное сообщение
+                            if (msg.equalsIgnoreCase("/end")) { // клиент вышел
+                                continueChat = false;
+                            } else if (msg.startsWith("/w")) { //приватное сообщение ДЗ7
+                                String[] tokens = msg.split("\\s", 3);
+                                System.out.println(tokens);
+                                if (tokens.length == 3) {
+                                    System.out.println(tokens);
+                                    server.privateMsg(this, tokens[1], tokens[2]);
+                                }
+                            }
+                        } else {// обычное сообщение
+                            server.broadcastMessage(nickname + " : " + msg);
+                        }
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } finally {
+                    disconnect();
                 }
+
             }).start();
         } catch (IOException e) {
             e.printStackTrace();
@@ -50,7 +82,7 @@ public class ClientHandler {
 
     public void sendMessage(String message) {
         try {
-            out.writeUTF(message);
+            out.writeUTF(message);// пишем сообщение клиенту
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -60,7 +92,9 @@ public class ClientHandler {
         return nickname;
     }
 
-    public void disconnect() {
+    public void disconnect() { // отключаемся
+        sendMessage("/end");
+        System.out.println("disconnected " + nickname);
         server.unsubscribe(this);
         try {
             in.close();
